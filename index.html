@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emoji Candy Crush</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles to ensure emojis are centred and board is a grid */
+        body {
+            font-family: "Inter", sans-serif;
+            background-color: #f0f4f8; /* Light blue-grey background */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden; /* Prevent scrollbars */
+        }
+        .game-board {
+            display: grid;
+            /* Grid columns and rows will be set dynamically by JS */
+            border: 4px solid #6b7280; /* Darker grey border for the board */
+            border-radius: 1rem; /* Rounded corners for the board */
+            background-color: #cbd5e1; /* Lighter grey background for the board cells */
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); /* Subtle shadow */
+        }
+        .emoji-cell {
+            width: 60px; /* Fixed width for each cell */
+            height: 60px; /* Fixed height for each cell */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 2.5rem; /* Large emoji size */
+            cursor: pointer;
+            border: 1px solid rgba(255, 255, 255, 0.3); /* Light border for cell separation */
+            /* Adjusted transition duration for transform and opacity for snappier animations */
+            transition: transform 0.15s ease-in-out, opacity 0.15s ease-in-out, background-color 0.2s ease-in-out;
+            user-select: none; /* Prevent text selection on emojis */
+            position: relative; /* Needed for transform to work correctly */
+        }
+        /* Make cells slightly darker on hover for visual feedback */
+        .emoji-cell:hover {
+            background-color: rgba(0, 0, 0, 0.05);
+        }
+        /* Style for selected cell */
+        .emoji-cell.selected {
+            border: 3px solid #f97316; /* Orange border for selected cell */
+            box-shadow: 0 0 15px rgba(249, 115, 22, 0.7); /* Glow effect */
+            transform: scale(1.05); /* Slightly enlarge selected cell */
+            z-index: 10; /* Bring selected cell to front */
+        }
+        /* Style for clearing animation */
+        .emoji-cell.clearing {
+            transform: scale(0); /* Shrink to disappear */
+            opacity: 0; /* Fade out */
+        }
+        /* Style for falling animation */
+        .emoji-cell.falling {
+            transition: transform 0.15s ease-in-out; /* Smooth fall transition, matching new duration */
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-purple-400 to-pink-500">
+    <div class="flex flex-col items-center p-6 bg-white rounded-2xl shadow-xl">
+        <h1 class="text-5xl font-extrabold mb-6 text-transparent bg-clip-text bg-gradient-to-r from-yellow-500 to-orange-600 drop-shadow-lg">
+            Emoji Crush!
+        </h1>
+        <div class="flex justify-between w-full max-w-sm mb-4 text-2xl font-semibold text-gray-700">
+            <span>Score: <span id="score">0</span></span>
+            <span>Moves: <span id="moves">0</span></span>
+        </div>
+        <div id="gameBoard" class="game-board">
+            <!-- Emoji cells will be injected here by JavaScript -->
+        </div>
+    </div>
+
+    <script>
+        // Define game board dimensions
+        const BOARD_ROWS = 8;
+        const BOARD_COLS = 8;
+        const CELL_SIZE = 60; // px
+        // Reduced animation duration for a snappier feel
+        const ANIMATION_DURATION = 150; // ms, matches CSS transition duration
+
+        // Emojis to be used as "candies"
+        const BASE_EMOJIS = ['🍭', '🍬', '🍎', '🍇', '💎', '✨', '💖', '🌟'];
+
+        // New special emoji types
+        const STRIPED_EMOJI = '⚡️'; // Clears a row or column
+        const WRAPPED_EMOJI = '🎁'; // Clears a 3x3 area
+        const COLOR_BOMB_EMOJI = '🌈'; // Clears all of one emoji type
+
+        // Game state variables
+        let gameBoard = []; // 2D array to store the current state of the board
+        let score = 0;
+        let moves = 0;
+        let selectedCell = null; // Stores the first clicked cell element
+        let isSwapping = false; // Flag to prevent rapid clicks during animation
+        let isProcessingBoard = false; // Flag to prevent new swaps during gravity/refill/chain reactions
+
+        // DOM elements
+        const gameBoardElement = document.getElementById('gameBoard');
+        const scoreElement = document.getElementById('score');
+        const movesElement = document.getElementById('moves');
+
+        /**
+         * Returns a random base emoji (not a special emoji).
+         * @returns {string} A random emoji character.
+         */
+        function getRandomBaseEmoji() {
+            return BASE_EMOJIS[Math.floor(Math.random() * BASE_EMOJIS.length)];
+        }
+
+        /**
+         * Retrieves the DOM element for a given row and column.
+         * @param {number} r The row index.
+         * @param {number} c The column index.
+         * @returns {HTMLElement|null} The cell element, or null if not found.
+         */
+        function getCellElement(r, c) {
+            return gameBoardElement.children[r * BOARD_COLS + c];
+        }
+
+        /**
+         * Activates the effect of a special emoji.
+         * @param {number} r The row of the special emoji.
+         * @param {number} c The column of the special emoji.
+         * @param {string} type The type of special emoji (STRIPED_EMOJI, WRAPPED_EMOJI, COLOR_BOMB_EMOJI).
+         * @param {string|null} swappedWithEmoji The emoji type it was swapped with (for Color Bomb).
+         * @returns {Set<string>} A set of coordinates (e.g., "r,c") of cells to be cleared by the special emoji.
+         */
+        function activateSpecialEmoji(r, c, type, swappedWithEmoji = null) {
+            let cellsAffected = new Set();
+            console.log(`Activating special emoji at ${r},${c} of type ${type}`);
+
+            if (type === STRIPED_EMOJI) {
+                // Clear entire row and column
+                for (let col = 0; col < BOARD_COLS; col++) cellsAffected.add(`${r},${col}`);
+                for (let row = 0; row < BOARD_ROWS; row++) cellsAffected.add(`${row},${c}`);
+            } else if (type === WRAPPED_EMOJI) {
+                // Clear 3x3 area around the wrapped emoji
+                for (let rowOffset = -1; rowOffset <= 1; rowOffset++) {
+                    for (let colOffset = -1; colOffset <= 1; colOffset++) {
+                        const targetR = r + rowOffset;
+                        const targetC = c + colOffset;
+                        if (targetR >= 0 && targetR < BOARD_ROWS && targetC >= 0 && targetC < BOARD_COLS) {
+                            cellsAffected.add(`${targetR},${targetC}`);
+                        }
+                    }
+                }
+            } else if (type === COLOR_BOMB_EMOJI) {
+                // Determine which emoji type to clear
+                let targetEmojiType = swappedWithEmoji;
+                if (!targetEmojiType || !BASE_EMOJIS.includes(targetEmojiType)) { // If not swapped with a base emoji, clear a random base emoji type
+                    targetEmojiType = BASE_EMOJIS[Math.floor(Math.random() * BASE_EMOJIS.length)];
+                }
+
+                console.log(`Color bomb clearing all '${targetEmojiType}' emojis.`);
+                for (let row = 0; row < BOARD_ROWS; row++) {
+                    for (let col = 0; col < BOARD_COLS; col++) {
+                        if (gameBoard[row][col] === targetEmojiType) {
+                            cellsAffected.add(`${row},${col}`);
+                        }
+                    }
+                }
+            }
+            return cellsAffected;
+        }
+
+        /**
+         * Finds all matches (3+, 4+, 5+, L/T shapes) on the board.
+         * Prioritizes longer matches and special candy formations.
+         * @returns {object} An object containing:
+         * - cellsToClear: Set<string> of coordinates (e.g., "r,c") of all matched cells.
+         * - specialCreations: Array of {row, col, type} for new special emojis.
+         */
+        function getMatchesOnBoard() {
+            let cellsToClear = new Set();
+            let potentialSpecialCreations = new Map(); // Key: "r,c", Value: {type, priority}
+
+            // Helper to add a special creation, prioritizing higher power-ups
+            const addSpecialCreation = (r, c, type) => {
+                const coordStr = `${r},${c}`;
+                const currentPriority = { [COLOR_BOMB_EMOJI]: 3, [WRAPPED_EMOJI]: 2, [STRIPED_EMOJI]: 1 }[type];
+                if (!potentialSpecialCreations.has(coordStr) || currentPriority > potentialSpecialCreations.get(coordStr).priority) {
+                    potentialSpecialCreations.set(coordStr, { type, priority: currentPriority, row: r, col: c });
+                }
+            };
+
+            // Temporary board to mark cells already processed for special creations
+            // This prevents a cell from creating multiple special candies or being part of multiple L/T shapes
+            let tempBoardForDetection = gameBoard.map(row => [...row]);
+
+            // --- Step 1: Find all horizontal and vertical lines (basic matches) and identify potential special candies ---
+            const allMatchCoords = new Set(); // Stores all coordinates that are part of any 3+ match
+
+            // Horizontal matches
+            for (let r = 0; r < BOARD_ROWS; r++) {
+                for (let c = 0; c < BOARD_COLS - 2; c++) {
+                    const emoji = tempBoardForDetection[r][c];
+                    if (!emoji || emoji.length > 1) continue; // Skip empty or special emojis
+
+                    if (emoji === tempBoardForDetection[r][c + 1] && emoji === tempBoardForDetection[r][c + 2]) {
+                        let line = [{ r, c }, { r, c: c + 1 }, { r, c: c + 2 }];
+                        let k = c + 3;
+                        while (k < BOARD_COLS && tempBoardForDetection[r][k] === emoji) {
+                            line.push({ r, c: k });
+                            k++;
+                        }
+
+                        // Add all cells in this line to allMatchCoords
+                        line.forEach(cell => allMatchCoords.add(`${cell.r},${cell.c}`));
+
+                        // Determine special candy creation based on line length
+                        if (line.length >= 5) {
+                            addSpecialCreation(r, c + Math.floor(line.length / 2), COLOR_BOMB_EMOJI);
+                        } else if (line.length >= 4) {
+                            addSpecialCreation(r, c + Math.floor(line.length / 2), STRIPED_EMOJI);
+                        }
+                    }
+                }
+            }
+
+            // Vertical matches
+            for (let c = 0; c < BOARD_COLS; c++) {
+                for (let r = 0; r < BOARD_ROWS - 2; r++) {
+                    const emoji = tempBoardForDetection[r][c];
+                    if (!emoji || emoji.length > 1) continue; // Skip empty or special emojis
+
+                    if (emoji === tempBoardForDetection[r + 1][c] && emoji === tempBoardForDetection[r + 2][c]) {
+                        let line = [{ r, c }, { r: r + 1, c }, { r: r + 2, c }];
+                        let k = r + 3;
+                        while (k < BOARD_ROWS && tempBoardForDetection[k][c] === emoji) {
+                            line.push({ r: k, c });
+                            k++;
+                        }
+
+                        // Add all cells in this line to allMatchCoords
+                        line.forEach(cell => allMatchCoords.add(`${cell.r},${cell.c}`));
+
+                        // Determine special candy creation based on line length
+                        if (line.length >= 5) {
+                            addSpecialCreation(r + Math.floor(line.length / 2), c, COLOR_BOMB_EMOJI);
+                        } else if (line.length >= 4) {
+                            addSpecialCreation(r + Math.floor(line.length / 2), c, STRIPED_EMOJI);
+                        }
+                    }
+                }
+            }
+
+            // --- Step 2: Detect L/T shapes for Wrapped Emojis ---
+            // Iterate through all cells that are part of a match to find intersections
+            for (let r = 0; r < BOARD_ROWS; r++) {
+                for (let c = 0; c < BOARD_COLS; c++) {
+                    const coordStr = `${r},${c}`;
+                    if (allMatchCoords.has(coordStr)) {
+                        const currentEmoji = tempBoardForDetection[r][c];
+                        if (!currentEmoji || currentEmoji.length > 1) continue;
+
+                        // Check for horizontal match passing through (r,c)
+                        let horizontalMatchCells = [];
+                        for (let i = Math.max(0, c - 2); i <= Math.min(BOARD_COLS - 1, c + 2); i++) {
+                            if (tempBoardForDetection[r][i] === currentEmoji) {
+                                horizontalMatchCells.push({r, c: i});
+                            } else {
+                                horizontalMatchCells = []; // Reset if sequence breaks
+                            }
+                            if (horizontalMatchCells.length >= 3 && horizontalMatchCells.some(cell => cell.c === c)) {
+                                break; // Found a horizontal line of 3+ including (r,c)
+                            }
+                        }
+
+                        // Check for vertical match passing through (r,c)
+                        let verticalMatchCells = [];
+                        for (let i = Math.max(0, r - 2); i <= Math.min(BOARD_ROWS - 1, r + 2); i++) {
+                            if (tempBoardForDetection[i][c] === currentEmoji) {
+                                verticalMatchCells.push({r: i, c});
+                            } else {
+                                verticalMatchCells = []; // Reset if sequence breaks
+                            }
+                            if (verticalMatchCells.length >= 3 && verticalMatchCells.some(cell => cell.r === r)) {
+                                break; // Found a vertical line of 3+ including (r,c)
+                            }
+                        }
+
+                        if (horizontalMatchCells.length >= 3 && verticalMatchCells.length >= 3) {
+                            // This cell is an intersection of a horizontal and vertical match, implying an L or T shape.
+                            addSpecialCreation(r, c, WRAPPED_EMOJI);
+                        }
+                    }
+                }
+            }
+
+
+            // --- Step 3: Finalize special creations and adjust cellsToClear ---
+
+            // Convert potentialSpecialCreations map to an array
+            const finalSpecialCreations = Array.from(potentialSpecialCreations.values()).map(item => ({
+                row: item.row,
+                col: item.col,
+                type: item.type
+            }));
+
+            // Add all detected match coordinates to cellsToClear
+            allMatchCoords.forEach(coord => cellsToClear.add(coord));
+
+            // Remove the locations of created special candies from cellsToClear
+            // This ensures special candies are transformed, not just cleared
+            finalSpecialCreations.forEach(sc => {
+                cellsToClear.delete(`${sc.row},${sc.col}`);
+            });
+
+            return { cellsToClear, specialCreations: finalSpecialCreations };
+        }
+
+        /**
+         * Applies gravity to the gameBoard array: moves emojis down to fill empty spaces.
+         * This function only updates the gameBoard array (model).
+         * It also returns an array of objects indicating which emojis moved and by how much, for animation.
+         * @returns {Array<{r: number, c: number, deltaY: number}>} List of moved emojis for animation.
+         */
+        function applyGravityToModel() {
+            const movedEmojis = [];
+            for (let c = 0; c < BOARD_COLS; c++) {
+                let emptySpacesInColumn = 0;
+                for (let r = BOARD_ROWS - 1; r >= 0; r--) {
+                    if (gameBoard[r][c] === '') {
+                        emptySpacesInColumn++;
+                    } else if (emptySpacesInColumn > 0) {
+                        // Store original position for animation (new position, old position for delta)
+                        // The emoji at (r, c) is moving to (r + emptySpacesInColumn, c)
+                        movedEmojis.push({ r: r + emptySpacesInColumn, c: c, deltaY: emptySpacesInColumn * CELL_SIZE });
+
+                        // Move emoji down in the model
+                        gameBoard[r + emptySpacesInColumn][c] = gameBoard[r][c];
+                        gameBoard[r][c] = ''; // Clear original position
+                    }
+                }
+            }
+            console.log('Gravity applied to model:', gameBoard);
+            return movedEmojis;
+        }
+
+        /**
+         * Fills any remaining empty spaces at the top of the board with new random emojis.
+         * This function only updates the gameBoard array (model).
+         */
+        function fillEmptySpacesInModel() {
+            for (let c = 0; c < BOARD_COLS; c++) {
+                for (let r = 0; r < BOARD_ROWS; r++) {
+                    if (gameBoard[r][c] === '') {
+                        gameBoard[r][c] = getRandomBaseEmoji();
+                    }
+                }
+            }
+            console.log('Empty spaces filled in model:', gameBoard);
+        }
+
+        /**
+         * Updates the visual representation of the board based on the gameBoard array.
+         * Applies falling animations for emojis that moved due to gravity.
+         * @param {Array<{r: number, c: number, deltaY: number}>} movedEmojis List of emojis that moved due to gravity.
+         */
+        async function updateVisualBoard(movedEmojis) {
+            // First, prepare and trigger falling animations
+            const fallingElements = new Set();
+            movedEmojis.forEach(move => {
+                const cellElement = getCellElement(move.r, move.c);
+                if (cellElement) {
+                    // Set the text content to the emoji that will land there *before* animation
+                    cellElement.textContent = gameBoard[move.r][move.c];
+                    // Apply inverse transform to simulate starting from above
+                    cellElement.style.transform = `translateY(-${move.deltaY}px)`;
+                    cellElement.classList.add('falling');
+                    fallingElements.add(cellElement);
+                }
+            });
+
+            // Force reflow to ensure transforms are applied before transition starts
+            if (fallingElements.size > 0) {
+                void gameBoardElement.offsetWidth;
+            }
+
+            // Trigger the transition by resetting transform
+            fallingElements.forEach(cellElement => {
+                cellElement.style.transform = ''; // Animate to original position (0,0)
+            });
+
+            // Wait for falling animations to complete
+            if (fallingElements.size > 0) {
+                await new Promise(resolve => setTimeout(resolve, ANIMATION_DURATION));
+            }
+
+            // After animations, update all text content (for new emojis and those that didn't fall)
+            // and remove falling class
+            for (let r = 0; r < BOARD_ROWS; r++) {
+                for (let c = 0; c < BOARD_COLS; c++) {
+                    const cellElement = getCellElement(r, c);
+                    if (cellElement) {
+                        cellElement.textContent = gameBoard[r][c]; // Ensure all visuals match model
+                        cellElement.classList.remove('falling'); // Remove after animation
+                    }
+                }
+            }
+            console.log('Visual board updated.');
+        }
+
+
+        /**
+         * Reverses the visual and array swap if no match was found after a move.
+         * @param {HTMLElement} cell1 The first cell element.
+         * @param {HTMLElement} cell2 The second cell element.
+         * @returns {Promise<void>} A promise that resolves after the reverse animation.
+         */
+        async function reverseSwap(cell1, cell2) {
+            // Calculate translation values for animation (reversed)
+            const row1 = parseInt(cell1.dataset.row);
+            const col1 = parseInt(cell1.dataset.col);
+            const row2 = parseInt(cell2.dataset.row);
+            const col2 = parseInt(cell2.dataset.col);
+
+            const deltaX1 = (col1 - col2) * CELL_SIZE; // Move cell1 back to cell2's original spot
+            const deltaY1 = (row1 - row2) * CELL_SIZE;
+            const deltaX2 = (col2 - col1) * CELL_SIZE; // Move cell2 back to cell1's original spot
+            const deltaY2 = (row1 - row2) * CELL_SIZE;
+
+            // Apply transform for reverse animation
+            cell1.style.transform = `translate(${deltaX1}px, ${deltaY1}px)`;
+            cell2.style.transform = `translate(${deltaX2}px, ${deltaY2}px)`;
+
+            // Wait for the reverse animation to complete
+            return new Promise(resolve => {
+                setTimeout(async () => { // Make this async
+                    // Swap emojis in the gameBoard array back
+                    const tempGameBoardEmoji = gameBoard[row1][col1];
+                    gameBoard[row1][col1] = gameBoard[row2][col2];
+                    gameBoard[row2][col2] = tempGameBoardEmoji;
+
+                    // Reset transform to original position immediately
+                    cell1.style.transform = '';
+                    cell2.style.transform = '';
+
+                    // Update visuals based on the reversed gameBoard state
+                    await updateVisualBoard([]); // No falling animations in reverse swap
+
+                    console.log('Swap reversed: No match found.');
+                    resolve(); // Resolve the promise after the animation and content swap
+                }, ANIMATION_DURATION); // Match animation duration
+            });
+        }
+
+        /**
+         * Handles the sequence of clearing matches, activating special emojis,
+         * applying gravity, and refilling the board, looping if chain reactions occur.
+         */
+        async function processBoard(initialSwapCells = null) {
+            isProcessingBoard = true; // Set flag to prevent new swaps during processing
+
+            let activityOccurred = true;
+            while (activityOccurred) {
+                activityOccurred = false; // Reset for this loop iteration
+
+                // Collect all cells to be cleared from special activations and regular matches
+                let cellsToClearOverall = new Set();
+                let specialCreationsThisTurn = [];
+
+                // 1. Handle special emoji activations from the initial swap (if any)
+                if (initialSwapCells && initialSwapCells.length === 2) {
+                    const [cell1, cell2] = initialSwapCells;
+                    const r1 = parseInt(cell1.dataset.row);
+                    const c1 = parseInt(cell1.dataset.col);
+                    const r2 = parseInt(cell2.dataset.row);
+                    const c2 = parseInt(cell2.dataset.col);
+
+                    const emoji1 = gameBoard[r1][c1];
+                    const emoji2 = gameBoard[r2][c2];
+
+                    let activatedSpecialCoords = new Set();
+
+                    // Combination: Color Bomb + Base Emoji
+                    if ((emoji1 === COLOR_BOMB_EMOJI && BASE_EMOJIS.includes(emoji2)) ||
+                        (emoji2 === COLOR_BOMB_EMOJI && BASE_EMOJIS.includes(emoji1))) {
+                        const colorBombR = emoji1 === COLOR_BOMB_EMOJI ? r1 : r2;
+                        const colorBombC = emoji1 === COLOR_BOMB_EMOJI ? c1 : c2;
+                        const targetEmoji = emoji1 === COLOR_BOMB_EMOJI ? emoji2 : emoji1;
+                        activateSpecialEmoji(colorBombR, colorBombC, COLOR_BOMB_EMOJI, targetEmoji).forEach(coord => activatedSpecialCoords.add(coord));
+                        cellsToClearOverall.add(`${colorBombR},${colorBombC}`); // Clear the color bomb itself
+                        activityOccurred = true;
+                    }
+                    // Combination: Two special emojis (Striped, Wrapped, Color Bomb)
+                    else if ((emoji1 === STRIPED_EMOJI || emoji1 === WRAPPED_EMOJI || emoji1 === COLOR_BOMB_EMOJI) &&
+                             (emoji2 === STRIPED_EMOJI || emoji2 === WRAPPED_EMOJI || emoji2 === COLOR_BOMB_EMOJI)) {
+                        activateSpecialEmoji(r1, c1, emoji1).forEach(coord => activatedSpecialCoords.add(coord));
+                        activateSpecialEmoji(r2, c2, emoji2).forEach(coord => activatedSpecialCoords.add(coord));
+                        cellsToClearOverall.add(`${r1},${c1}`); // Clear both special emojis
+                        cellsToClearOverall.add(`${r2},${c2}`);
+                        activityOccurred = true;
+                    }
+
+                    activatedSpecialCoords.forEach(coord => cellsToClearOverall.add(coord));
+                }
+
+                // 2. Check for and collect regular matches, and new special emojis from cascades
+                const { cellsToClear, specialCreations } = getMatchesOnBoard();
+                cellsToClear.forEach(coord => cellsToClearOverall.add(coord));
+                specialCreationsThisTurn = specialCreations; // Store for later creation
+
+                if (cellsToClearOverall.size > 0 || specialCreationsThisTurn.length > 0) {
+                    activityOccurred = true;
+
+                    // Mark cells for clearing in the gameBoard array immediately
+                    cellsToClearOverall.forEach(coord => {
+                        const [r, c] = coord.split(',').map(Number);
+                        gameBoard[r][c] = ''; // Mark as cleared in the gameBoard array
+                        score += 10;
+                        const cellElement = getCellElement(r, c);
+                        if (cellElement) {
+                            cellElement.classList.add('clearing'); // Add visual clearing class
+                        }
+                    });
+                    scoreElement.textContent = score;
+
+                    // Wait for clearing animation to complete visually
+                    await new Promise(resolve => setTimeout(resolve, ANIMATION_DURATION));
+
+                    // After animation, clear text content and remove class
+                    cellsToClearOverall.forEach(coord => {
+                        const [r, c] = coord.split(',').map(Number);
+                        const cellElement = getCellElement(r, c);
+                        if (cellElement) {
+                            cellElement.textContent = ''; // Ensure text content is empty
+                            cellElement.classList.remove('clearing');
+                        }
+                    });
+
+                    // Create special emojis in the gameBoard array
+                    specialCreationsThisTurn.forEach(creation => {
+                        const { row, col, type } = creation;
+                        gameBoard[row][col] = type; // Update gameBoard with special emoji
+                    });
+
+                    // Now, apply gravity and refill to the model
+                    const movedEmojis = applyGravityToModel();
+                    fillEmptySpacesInModel();
+
+                    // Update visuals for the entire board, including falling animations
+                    await updateVisualBoard(movedEmojis);
+
+                    // The loop will then re-check for new matches created by gravity/refill
+                }
+            }
+            isProcessingBoard = false; // Reset flag when board is stable
+            console.log('Board processing complete.');
+        }
+
+
+        /**
+         * Swaps the emojis between two given cell elements, both visually and in the gameBoard array, with animation.
+         * After the animation, it checks for matches. If no matches, the swap is reversed.
+         * @param {HTMLElement} cell1 The first cell element.
+         * @param {HTMLElement} cell2 The second cell element.
+         */
+        function swapEmojis(cell1, cell2) {
+            isSwapping = true; // Set flag to prevent further clicks
+
+            const row1 = parseInt(cell1.dataset.row);
+            const col1 = parseInt(cell1.dataset.col);
+            const row2 = parseInt(cell2.dataset.row);
+            const col2 = parseInt(cell2.dataset.col);
+
+            // Calculate translation values for animation
+            const deltaX1 = (col2 - col1) * CELL_SIZE;
+            const deltaY1 = (row2 - row1) * CELL_SIZE;
+            const deltaX2 = (col1 - col2) * CELL_SIZE; // Opposite direction for cell2
+            const deltaY2 = (row1 - row2) * CELL_SIZE; // Opposite direction for cell2
+
+            // Apply transform for animation
+            cell1.style.transform = `translate(${deltaX1}px, ${deltaY1}px)`;
+            cell2.style.transform = `translate(${deltaX2}px, ${deltaY2}px)`;
+
+            // After the animation, swap content and reset transform
+            setTimeout(async () => {
+                // Swap emojis visually (textContent) - temporarily, will be fully updated by updateVisualBoard
+                const tempEmoji = cell1.textContent;
+                cell1.textContent = cell2.textContent;
+                cell2.textContent = tempEmoji;
+
+                // Reset transform to original position
+                cell1.style.transform = '';
+                cell2.style.transform = '';
+
+                // Swap emojis in the gameBoard array
+                const tempGameBoardEmoji = gameBoard[row1][col1];
+                gameBoard[row1][col1] = gameBoard[row2][col2];
+                gameBoard[row2][col2] = tempGameBoardEmoji;
+
+                isSwapping = false; // Reset flag after visual swap
+
+                // Check if the swap resulted in any immediate matches or special activations
+                const { cellsToClear, specialCreations } = getMatchesOnBoard();
+                let initialActivity = cellsToClear.size > 0 || specialCreations.length > 0;
+
+                // Also check for special candy combinations (e.g., Color Bomb + Base Emoji)
+                const emoji1AfterSwap = gameBoard[row1][col1];
+                const emoji2AfterSwap = gameBoard[row2][col2];
+                const isColorBombSwap = (emoji1AfterSwap === COLOR_BOMB_EMOJI && BASE_EMOJIS.includes(emoji2AfterSwap)) ||
+                                        (emoji2AfterSwap === COLOR_BOMB_EMOJI && BASE_EMOJIS.includes(emoji1AfterSwap));
+                const areBothSpecial = (emoji1AfterSwap === STRIPED_EMOJI || emoji1AfterSwap === WRAPPED_EMOJI || emoji1AfterSwap === COLOR_BOMB_EMOJI) &&
+                                       (emoji2AfterSwap === STRIPED_EMOJI || emoji2AfterSwap === WRAPPED_EMOJI || emoji2AfterSwap === COLOR_BOMB_EMOJI);
+
+
+                if (!initialActivity && !isColorBombSwap && !areBothSpecial) {
+                    // If no matches and no special-special swap, reverse the swap
+                    await reverseSwap(cell1, cell2); // Await the reverse animation
+                    moves--; // Decrement moves if swap was invalid and reversed
+                    movesElement.textContent = moves;
+                } else {
+                    // If matches were found, or it was a special-special swap, proceed with board processing
+                    await processBoard([cell1, cell2]); // Pass swapped cells for special combo handling
+                }
+
+            }, ANIMATION_DURATION); // This timeout should match the CSS transition duration
+        }
+
+        /**
+         * Handles the click event on an emoji cell.
+         * Manages selecting the first cell and attempting to swap with a second adjacent cell.
+         * @param {Event} event The click event object.
+         */
+        function handleCellClick(event) {
+            // Prevent clicks if a swap animation or board processing is in progress
+            if (isSwapping || isProcessingBoard) {
+                return;
+            }
+
+            const clickedCell = event.target;
+            const clickedRow = parseInt(clickedCell.dataset.row);
+            const clickedCol = parseInt(clickedCell.dataset.col);
+
+            // If no cell is currently selected, select this one
+            if (!selectedCell) {
+                selectedCell = clickedCell;
+                selectedCell.classList.add('selected'); // Add visual highlight
+            } else {
+                // A cell is already selected, now check if the clicked cell is adjacent
+                const selectedRow = parseInt(selectedCell.dataset.row);
+                const selectedCol = parseInt(selectedCell.dataset.col);
+
+                // Check if the clicked cell is adjacent (horizontally or vertically)
+                const isAdjacent =
+                    (Math.abs(clickedRow - selectedRow) === 1 && clickedCol === selectedCol) || // Vertical adjacency
+                    (Math.abs(clickedCol - selectedCol) === 1 && clickedRow === selectedRow);   // Horizontal adjacency
+
+                if (isAdjacent) {
+                    // If adjacent, perform the swap
+                    swapEmojis(selectedCell, clickedCell);
+                    // After a swap, clear the selection
+                    selectedCell.classList.remove('selected');
+                    selectedCell = null;
+                    moves++; // Increment moves after a valid swap
+                    movesElement.textContent = moves;
+                } else {
+                    // If not adjacent, deselect the previous cell and select the new one
+                    selectedCell.classList.remove('selected');
+                    selectedCell = clickedCell;
+                    selectedCell.classList.add('selected');
+                }
+            }
+        }
+
+        /**
+         * Initializes the game board by creating and populating cells with random emojis.
+         * Ensures no initial matches are present on the board.
+         * Attaches click event listeners to each cell.
+         */
+        function initializeBoard() {
+            // Set up CSS grid properties dynamically based on board dimensions
+            gameBoardElement.style.gridTemplateColumns = `repeat(${BOARD_COLS}, ${CELL_SIZE}px)`;
+            gameBoardElement.style.gridTemplateRows = `repeat(${BOARD_ROWS}, ${CELL_SIZE}px)`;
+
+            // Clear any existing cells
+            gameBoardElement.innerHTML = '';
+            gameBoard = []; // Reset the game board array
+            score = 0; // Reset score
+            moves = 0; // Reset moves
+
+            for (let r = 0; r < BOARD_ROWS; r++) {
+                gameBoard[r] = []; // Initialize row array
+                for (let c = 0; c < BOARD_COLS; c++) {
+                    let randomEmoji;
+                    let isMatch;
+                    do {
+                        isMatch = false;
+                        randomEmoji = getRandomBaseEmoji(); // Use the new function
+
+                        // Check for horizontal match with previous two emojis
+                        if (c >= 2 && gameBoard[r][c - 1] === randomEmoji && gameBoard[r][c - 2] === randomEmoji) {
+                            isMatch = true;
+                        }
+                        // Check for vertical match with previous two emojis
+                        if (r >= 2 && gameBoard[r - 1][c] === randomEmoji && gameBoard[r - 2][c] === randomEmoji) {
+                            isMatch = true;
+                        }
+                    } while (isMatch); // Keep trying until no initial match is formed
+
+                    gameBoard[r][c] = randomEmoji; // Store emoji in game state
+
+                    // Create the cell element
+                    const cell = document.createElement('div');
+                    cell.classList.add('emoji-cell', 'rounded-lg'); // Add Tailwind rounded corners
+                    cell.dataset.row = r; // Store row index
+                    cell.dataset.col = c; // Store column index
+                    cell.textContent = randomEmoji; // Display the emoji
+
+                    // Add click event listener to each cell
+                    cell.addEventListener('click', handleCellClick);
+
+                    // Append cell to the game board
+                    gameBoardElement.appendChild(cell);
+                }
+            }
+
+            // Update score and moves display
+            scoreElement.textContent = score;
+            movesElement.textContent = moves;
+
+            console.log('Board initialized with no initial matches:', gameBoard);
+        }
+
+        // Call initializeBoard when the window loads
+        window.onload = initializeBoard;
+
+    </script>
+</body>
+</html>
